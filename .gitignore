@@ -1,0 +1,4 @@
+echo modelos/*.keras >> .gitignore
+echo modelos/*.h5 >> .gitignore
+echo modelos/*.pth >> .gitignore
+echo modelos/*.pt >> .gitignore
