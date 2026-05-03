@@ -1,12 +1,14 @@
 import os
+from pathlib import Path
+
 import pandas as pd
-import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
 
-from pathlib import Path
 from sklearn.model_selection import train_test_split
-from tensorflow.keras import layers, models
+from tensorflow.keras import layers
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+
 
 # ==========================
 # CONFIGURACIÓN
@@ -26,8 +28,9 @@ RUTA_GRAFICAS.mkdir(exist_ok=True)
 
 IMG_SIZE = (224, 224)
 BATCH_SIZE = 8
-EPOCHS = 20
+EPOCHS = 30
 SEED = 123
+
 
 # ==========================
 # CARGAR CSV
@@ -35,19 +38,26 @@ SEED = 123
 
 df = pd.read_csv(RUTA_CSV)
 
-# Todas las columnas excepto "archivo" son etiquetas
+if "archivo" not in df.columns:
+    raise ValueError("El archivo etiquetas.csv debe tener una columna llamada 'archivo'.")
+
 CLASES = [col for col in df.columns if col != "archivo"]
 
 print("Clases detectadas:", CLASES)
-print("Total de imágenes:", len(df))
+print("Total de registros en CSV:", len(df))
 
-# Crear ruta completa de cada imagen
 df["ruta"] = df["archivo"].apply(lambda x: str(RUTA_IMAGENES / x))
 
-# Verificar que existan las imágenes
 df = df[df["ruta"].apply(os.path.exists)].reset_index(drop=True)
 
 print("Imágenes encontradas:", len(df))
+
+if len(df) == 0:
+    raise ValueError("No se encontraron imágenes. Revisa dataset/imagenes y etiquetas.csv.")
+
+print("\nDistribución de etiquetas:")
+print(df[CLASES].sum())
+
 
 # ==========================
 # DIVISIÓN TRAIN / VAL / TEST
@@ -67,20 +77,28 @@ val_df, test_df = train_test_split(
     shuffle=True
 )
 
+print("\nDivisión del dataset:")
 print("Entrenamiento:", len(train_df))
 print("Validación:", len(val_df))
 print("Prueba:", len(test_df))
 
+
 # ==========================
-# FUNCIÓN PARA CARGAR IMAGEN
+# CARGAR IMÁGENES
 # ==========================
 
 def cargar_imagen(ruta, etiquetas):
     imagen = tf.io.read_file(ruta)
-    imagen = tf.image.decode_image(imagen, channels=3, expand_animations=False)
+    imagen = tf.image.decode_image(
+        imagen,
+        channels=3,
+        expand_animations=False
+    )
     imagen = tf.image.resize(imagen, IMG_SIZE)
     imagen = tf.cast(imagen, tf.float32) / 255.0
+
     return imagen, etiquetas
+
 
 def crear_dataset(dataframe, shuffle=True):
     rutas = dataframe["ruta"].values
@@ -97,47 +115,79 @@ def crear_dataset(dataframe, shuffle=True):
 
     return ds
 
+
 train_ds = crear_dataset(train_df, shuffle=True)
 val_ds = crear_dataset(val_df, shuffle=False)
 test_ds = crear_dataset(test_df, shuffle=False)
 
+
 # ==========================
-# MODELO CNN MULTILABEL
+# MODELO MULTILABEL CON MOBILENETV2
 # ==========================
 
-modelo = models.Sequential([
-    layers.Input(shape=(224, 224, 3)),
+data_augmentation = tf.keras.Sequential([
+    layers.RandomFlip("horizontal"),
+    layers.RandomRotation(0.08),
+    layers.RandomZoom(0.10),
+    layers.RandomContrast(0.10),
+], name="data_augmentation")
 
-    layers.Conv2D(32, (3, 3), activation="relu"),
-    layers.MaxPooling2D(),
+base_model = tf.keras.applications.MobileNetV2(
+    input_shape=(224, 224, 3),
+    include_top=False,
+    weights="imagenet"
+)
 
-    layers.Conv2D(64, (3, 3), activation="relu"),
-    layers.MaxPooling2D(),
+base_model.trainable = False
 
-    layers.Conv2D(128, (3, 3), activation="relu"),
-    layers.MaxPooling2D(),
+inputs = layers.Input(shape=(224, 224, 3))
 
-    layers.Flatten(),
+x = data_augmentation(inputs)
 
-    layers.Dense(128, activation="relu"),
-    layers.Dropout(0.5),
+# Las imágenes vienen en 0-1, MobileNetV2 espera el preprocesamiento sobre 0-255
+x = tf.keras.applications.mobilenet_v2.preprocess_input(x * 255.0)
 
-    # MULTILABEL:
-    # Una neurona por conducta, con sigmoid independiente
-    layers.Dense(len(CLASES), activation="sigmoid")
-])
+x = base_model(x, training=False)
+
+x = layers.GlobalAveragePooling2D()(x)
+x = layers.Dense(128, activation="relu")(x)
+x = layers.Dropout(0.5)(x)
+
+# MULTILABEL: una salida independiente por conducta
+outputs = layers.Dense(len(CLASES), activation="sigmoid")(x)
+
+modelo = tf.keras.Model(inputs, outputs)
 
 modelo.compile(
     optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
     loss="binary_crossentropy",
     metrics=[
-        "binary_accuracy",
+        tf.keras.metrics.BinaryAccuracy(name="binary_accuracy"),
         tf.keras.metrics.Precision(name="precision"),
         tf.keras.metrics.Recall(name="recall")
     ]
 )
 
 modelo.summary()
+
+
+# ==========================
+# CALLBACKS
+# ==========================
+
+early_stop = EarlyStopping(
+    monitor="val_loss",
+    patience=5,
+    restore_best_weights=True
+)
+
+checkpoint = ModelCheckpoint(
+    filepath=RUTA_MODELOS / "mejor_modelo_multilabel.keras",
+    monitor="val_loss",
+    save_best_only=True,
+    verbose=1
+)
+
 
 # ==========================
 # ENTRENAMIENTO
@@ -146,8 +196,10 @@ modelo.summary()
 historial = modelo.fit(
     train_ds,
     validation_data=val_ds,
-    epochs=EPOCHS
+    epochs=EPOCHS,
+    callbacks=[early_stop, checkpoint]
 )
+
 
 # ==========================
 # EVALUACIÓN
@@ -156,35 +208,50 @@ historial = modelo.fit(
 resultados = modelo.evaluate(test_ds)
 
 print("\nResultados en prueba:")
-for nombre, valor in zip(modelo.metrics_names, resultados):
+nombres_metricas = ["loss", "binary_accuracy", "precision", "recall"]
+
+for nombre, valor in zip(nombres_metricas, resultados):
     print(f"{nombre}: {valor:.4f}")
 
+
 # ==========================
-# GUARDAR MODELO
+# GUARDAR MODELO FINAL
 # ==========================
 
 modelo.save(RUTA_MODELOS / "modelo_multilabel.keras")
-print("\nModelo guardado en modelos/modelo_multilabel.keras")
+
+print("\nModelo final guardado en:")
+print(RUTA_MODELOS / "modelo_multilabel.keras")
+
+print("\nMejor modelo guardado en:")
+print(RUTA_MODELOS / "mejor_modelo_multilabel.keras")
+
 
 # ==========================
 # GUARDAR HISTORIAL
 # ==========================
 
 historial_df = pd.DataFrame(historial.history)
-historial_df.to_csv(RUTA_RESULTADOS / "historial_entrenamiento.csv", index=False)
+historial_df.to_csv(
+    RUTA_RESULTADOS / "historial_entrenamiento.csv",
+    index=False
+)
+
 
 # ==========================
 # GUARDAR RESULTADOS
 # ==========================
-
-nombres_metricas = ["loss", "binary_accuracy", "precision", "recall"]
 
 resultados_df = pd.DataFrame({
     "metrica": nombres_metricas[:len(resultados)],
     "valor": resultados
 })
 
-resultados_df.to_csv(RUTA_RESULTADOS / "matriz_resultados.csv", index=False)
+resultados_df.to_csv(
+    RUTA_RESULTADOS / "matriz_resultados.csv",
+    index=False
+)
+
 
 # ==========================
 # GRÁFICA ACCURACY
@@ -200,6 +267,7 @@ plt.legend()
 plt.savefig(RUTA_GRAFICAS / "accuracy.png")
 plt.close()
 
+
 # ==========================
 # GRÁFICA LOSS
 # ==========================
@@ -214,4 +282,6 @@ plt.legend()
 plt.savefig(RUTA_GRAFICAS / "loss.png")
 plt.close()
 
-print("\nGráficas guardadas en resultados/graficas/")
+
+print("\nGráficas guardadas en:")
+print(RUTA_GRAFICAS)
