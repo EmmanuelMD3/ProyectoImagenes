@@ -5,11 +5,11 @@ CARPETA_IMAGENES = Path("dataset/imagenes")
 ARCHIVO_CSV = Path("dataset/etiquetas.csv")
 
 CLASES = [
-    "manoBoca",
+    #"manoBoca",
     "manoCara",
-    "movimientoPierna",
-    "desvioMirada",
-    "posturaNeutral"
+    #"movimientoPierna",
+    "desviacionMirada"
+    #"posturaNeutral"
 ]
 
 extensiones = [".jpg", ".jpeg", ".png", ".webp"]
