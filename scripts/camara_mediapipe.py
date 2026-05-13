@@ -7,7 +7,12 @@ from collections import deque
 # CONFIGURACIÓN
 # ==========================
 
+# Si manoCara detecta aunque la mano esté lejos, baja a 0.10
+# Si no detecta cuando sí te tocas la cara, sube a 0.15
 UMBRAL_MANO_CARA = 0.13
+
+# Si desviacionMirada se activa de frente, sube a 0.22 o 0.25
+# Si no detecta cuando miras a un lado, baja a 0.15
 UMBRAL_MIRADA_X = 0.18
 
 HISTORIAL_FRAMES = 10
@@ -21,7 +26,6 @@ historial_desviacion = deque(maxlen=HISTORIAL_FRAMES)
 
 mp_face_mesh = mp.solutions.face_mesh
 mp_hands = mp.solutions.hands
-mp_drawing = mp.solutions.drawing_utils
 
 face_mesh = mp_face_mesh.FaceMesh(
     static_image_mode=False,
@@ -49,7 +53,7 @@ def distancia(p1, p2):
 def detectar_mano_cara(face_landmarks, hand_landmarks):
     """
     Detecta mano-cara si algún punto importante de la mano
-    está cerca de puntos del rostro.
+    está cerca de puntos clave del rostro.
     """
 
     if face_landmarks is None or hand_landmarks is None:
@@ -57,8 +61,6 @@ def detectar_mano_cara(face_landmarks, hand_landmarks):
 
     rostro = face_landmarks.landmark
 
-    # Puntos aproximados del rostro:
-    # nariz, boca, mejillas, mentón
     puntos_rostro = [
         rostro[1],    # nariz
         rostro[13],   # labio superior
@@ -68,9 +70,8 @@ def detectar_mano_cara(face_landmarks, hand_landmarks):
         rostro[454],  # mejilla derecha
     ]
 
-    # Puntos importantes de la mano:
-    # puntas de dedos y palma
     mano = hand_landmarks.landmark
+
     puntos_mano = [
         mano[0],   # muñeca
         mano[4],   # pulgar
@@ -82,9 +83,9 @@ def detectar_mano_cara(face_landmarks, hand_landmarks):
 
     distancia_minima = 1.0
 
-    for pm in puntos_mano:
-        for pr in puntos_rostro:
-            d = distancia(pm, pr)
+    for punto_mano in puntos_mano:
+        for punto_rostro in puntos_rostro:
+            d = distancia(punto_mano, punto_rostro)
             distancia_minima = min(distancia_minima, d)
 
     mano_cara = distancia_minima <= UMBRAL_MANO_CARA
@@ -94,8 +95,8 @@ def detectar_mano_cara(face_landmarks, hand_landmarks):
 
 def detectar_desviacion_mirada(face_landmarks):
     """
-    Detecta desviación de mirada usando iris.
-    Si los iris se alejan del centro del ojo, se marca desviación.
+    Detecta desviación de mirada usando la posición horizontal del iris.
+    Si el iris se aleja del centro del ojo, se marca desviación.
     """
 
     if face_landmarks is None:
@@ -113,6 +114,7 @@ def detectar_desviacion_mirada(face_landmarks):
         ojo_der_1 = lm[362]
         ojo_der_2 = lm[263]
         iris_der = lm[473]
+
     except IndexError:
         return False, 0.0
 
@@ -130,7 +132,7 @@ def detectar_desviacion_mirada(face_landmarks):
 
     promedio = (pos_izq + pos_der) / 2
 
-    # 0.5 es centro aproximado
+    # 0.5 representa el centro aproximado del ojo
     score = abs(promedio - 0.5)
 
     desviacion = score >= UMBRAL_MIRADA_X
@@ -209,40 +211,31 @@ while True:
     else:
         face_landmarks = resultado_face.multi_face_landmarks[0]
 
-        # Dibujar puntos de rostro
-        mp_drawing.draw_landmarks(
-            frame,
-            face_landmarks,
-            mp_face_mesh.FACEMESH_CONTOURS,
-            landmark_drawing_spec=None,
-            connection_drawing_spec=mp_drawing.DrawingSpec(
-                color=(80, 110, 10),
-                thickness=1,
-                circle_radius=1
-            )
-        )
+        # ==========================
+        # DESVIACIÓN DE MIRADA
+        # ==========================
 
-        # Desviación de mirada
         desviacion, score_mirada = detectar_desviacion_mirada(face_landmarks)
 
-        # Mano-cara
+        # ==========================
+        # MANO A CARA
+        # ==========================
+
         mano_cara_detectada = False
         distancia_mano = 1.0
 
         if resultado_hands.multi_hand_landmarks:
             for hand_landmarks in resultado_hands.multi_hand_landmarks:
-                mp_drawing.draw_landmarks(
-                    frame,
-                    hand_landmarks,
-                    mp_hands.HAND_CONNECTIONS
-                )
-
                 mano_cara, d = detectar_mano_cara(face_landmarks, hand_landmarks)
 
                 if mano_cara:
                     mano_cara_detectada = True
 
                 distancia_mano = min(distancia_mano, d)
+
+        # ==========================
+        # SUAVIZADO TEMPORAL
+        # ==========================
 
         historial_mano_cara.append(1 if mano_cara_detectada else 0)
         historial_desviacion.append(1 if desviacion else 0)
@@ -253,7 +246,13 @@ while True:
         mano_final = mano_prom >= 0.6
         desviacion_final = mirada_prom >= 0.6
 
+        # Postura neutral calculada:
+        # si hay rostro y no hay conductas activas
         postura_neutral = not mano_final and not desviacion_final
+
+        # ==========================
+        # MOSTRAR TEXTO
+        # ==========================
 
         y = 35
 
