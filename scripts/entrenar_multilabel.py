@@ -285,3 +285,6 @@ plt.close()
 
 print("\nGráficas guardadas en:")
 print(RUTA_GRAFICAS)
+
+print("\nDistribución de etiquetas:")
+print(df[CLASES].sum())

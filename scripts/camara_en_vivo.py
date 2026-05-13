@@ -12,17 +12,37 @@ RUTA_MODELO = Path("modelos/mejor_modelo_multilabel.keras")
 
 CLASES = [
     "manoCara",
-    "desviacionMirada"
+    "desviacionMirada",
+    "posturaNeutral"
 ]
 
 IMG_SIZE = (224, 224)
 
-# Umbral individual por clase
-# manoCara se sube porque está dando falsos positivos
 UMBRALES = {
     "manoCara": 0.75,
-    "desviacionMirada": 0.80
+    "desviacionMirada": 0.80,
+    "posturaNeutral": 0.80
 }
+
+historial = {
+    clase: deque(maxlen=20) for clase in CLASES
+}
+
+# ==========================
+# CARGAR MODELO
+# ==========================
+
+modelo = tf.keras.models.load_model(RUTA_MODELO)
+
+print("Modelo cargado desde:", RUTA_MODELO)
+print("Forma de salida del modelo:", modelo.output_shape)
+print("Clases en cámara:", CLASES)
+
+if modelo.output_shape[-1] != len(CLASES):
+    raise ValueError(
+        f"El modelo tiene {modelo.output_shape[-1]} salidas, "
+        f"pero en CLASES tienes {len(CLASES)} clases."
+    )
 
 # Historial para suavizar predicciones
 # Guarda las últimas 10 predicciones de cada clase
