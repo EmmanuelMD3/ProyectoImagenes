@@ -8,8 +8,8 @@ CLASES = [
     #"manoBoca",
     "manoCara",
     #"movimientoPierna",
-    "desviacionMirada"
-    #"posturaNeutral"
+    "desviacionMirada",
+    "posturaNeutral"
 ]
 
 extensiones = [".jpg", ".jpeg", ".png", ".webp"]
